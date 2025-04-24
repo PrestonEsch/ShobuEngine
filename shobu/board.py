@@ -1,32 +1,67 @@
+import math
+from typing import Self
+
+import numpy as np
+
 from shobu.move import Cord, Move, MovePair
 
 
 class Board:
-    _NO_PIECE    = "."
-    _BLACK_PIECE = "B"
-    _WHITE_PIECE = "W"
+    # Board / Turn values
+    _NO_PIECE:    int =  0
+    _BLACK_PIECE: int =  1
+    _WHITE_PIECE: int = -1
 
-    BLACK = "B"
-    WHITE = "W"
+    NONE:  int        =  0
+    BLACK: int        =  1
+    WHITE: int        = -1
 
-    _boards: dict[str, list] = {
-        "blackLeft":  [],
-        "blackRight": [],
-        "whiteLeft":  [],
-        "whiteRight": []
-    }
-
-    _DIRECTIONS = [
+    # Used for getting legal moves
+    _DIRECTIONS = (
         [-1,  1], [0,  1], [1,  1],
         [-1,  0],          [1,  0],
         [-1, -1], [0, -1], [1, -1]
-    ]
-    _MAGNITUDES = [1, 2]
+    )
+    _MAGNITUDES = {1, 2}
 
-    def __init__(self):
+    def __init__(self, serialized_string: str = ""):
+        self._boards: dict[str, np.array] = {
+            "blackLeft":  None,
+            "blackRight": None,
+            "whiteLeft":  None,
+            "whiteRight": None
+        }
+
+        # Tracking number of turns and current player
+        self._current_player = self.BLACK
+        self._turn_number: float = 1
+
+        self._move_stack: list[tuple[MovePair, str]] = []
+
         self._winner = None
 
+        # Setting board up (Default if serialized string is empty, otherwise set it up to that position
         self.reset()
+
+        if serialized_string != "":
+            # Splitting up the metadata (Board content, turn number, current player turn
+            meta_split = serialized_string.split("&&")
+
+            # Setting meta game data
+            self._turn_number = float(meta_split[1])
+            self._current_player = int(meta_split[2])
+
+            # Extracting the board positions from the string (4 sub boards with arrays that are ints)
+            parsed_sub_boards = [[int(x) for x in s.split(';')] for s in meta_split[0].split("||")]
+
+            # Setting each piece into it's square
+            for i, sub_board_values in enumerate(parsed_sub_boards):
+                sub_board = list(self._boards.keys())[i]
+                for j in range(len(sub_board_values)):
+                    x = j % 4
+                    y = j // 4
+
+                    self._boards[sub_board][x][y] = sub_board_values[j]
 
     def reset(self) -> None:
         """
@@ -34,12 +69,36 @@ class Board:
         """
         for board in self._boards:
             # Setting up a 4x4 board
-            self._boards[board] = [
+            self._boards[board] = np.array([
                 [self._BLACK_PIECE, self._NO_PIECE, self._NO_PIECE, self._WHITE_PIECE],
                 [self._BLACK_PIECE, self._NO_PIECE, self._NO_PIECE, self._WHITE_PIECE],
                 [self._BLACK_PIECE, self._NO_PIECE, self._NO_PIECE, self._WHITE_PIECE],
                 [self._BLACK_PIECE, self._NO_PIECE, self._NO_PIECE, self._WHITE_PIECE],
-            ]
+            ])
+
+        self._current_player = Board.BLACK
+        self._turn_number = 1
+        self._move_stack.clear()
+
+    def load(self, serial):
+        # Splitting up the metadata (Board content, turn number, current player turn
+        meta_split = serial.split("&&")
+
+        # Setting meta game data
+        self._turn_number = float(meta_split[1])
+        self._current_player = int(meta_split[2])
+
+        # Extracting the board positions from the string (4 sub boards with arrays that are ints)
+        parsed_sub_boards = [[int(x) for x in s.split(';')] for s in meta_split[0].split("||")]
+
+        # Setting each piece into it's square
+        for i, sub_board_values in enumerate(parsed_sub_boards):
+            sub_board = list(self._boards.keys())[i]
+            for j in range(len(sub_board_values)):
+                x = j % 4
+                y = j // 4
+
+                self._boards[sub_board][x][y] = sub_board_values[j]
 
     @staticmethod
     def _get_adjacent_boards(board: str) -> tuple[str, str]:
@@ -53,34 +112,21 @@ class Board:
     def _get_opposite_color(self, color: WHITE or BLACK) -> WHITE or BLACK:
         return self.WHITE if color == self.BLACK else self.BLACK
 
-    def is_winner(self) -> bool:
-        for board in self._boards:
-            black_found: bool = False
-            white_found: bool = False
-            for x in range(4):
-                for y in range(4):
-                    if self._boards[board][x][y] is self.BLACK:
-                        black_found = True
-                    elif self._boards[board][x][y] is self.WHITE:
-                        white_found = True
-
-            if not black_found:
-                self._winner = self.WHITE
-                return True
-            elif not white_found:
+    def has_winner(self) -> bool:
+        for sub_board in self._boards:
+            if np.sum(self._boards[sub_board] == Board.BLACK) == 0:
                 self._winner = self.BLACK
                 return True
-            else:
-                self._winner = None
+
+            elif np.sum(self._boards[sub_board] == Board.WHITE) == 0:
+                self._winner = self.WHITE
+                return True
 
         return False
 
-    @property
-    def winner(self) -> None or str:
-        return self._winner
-
-
     def make_move(self, move: MovePair):
+        self._turn_number += 0.5
+
         # Making Passive move (Setting previous location to nothing, and moving it to new one)
         passive_piece: str = self._boards[move.passive_board][move.passive_move.start.x][move.passive_move.start.y]
 
@@ -88,34 +134,44 @@ class Board:
         self._boards[move.passive_board][move.passive_move.end.x][move.passive_move.end.y] = passive_piece
 
         # Aggressive move (Moving previous piece to new position, and pushing any pieces)
-        aggressive_piece: str = self._boards[move.aggressive_board][move.aggressive_move.start.x][move.aggressive_move.start.y]
-        after_end: Cord = move.aggressive_move.end + move.aggressive_move.normalized_difference # One past the end
+        pushed_to_cord = move.aggressive_move.end + move.aggressive_move.normalized_difference
+        moving_piece = self._boards[move.aggressive_board][move.aggressive_move.start.x][move.aggressive_move.start.y]
 
-        piece_on_end: str = self._boards[move.aggressive_board][move.aggressive_move.end.x][move.aggressive_move.end.y] # Piece that the moving aggressive piece is on
-
-        # Actually just moving the aggressive piece
-        self._boards[move.aggressive_board][move.aggressive_move.start.x][move.aggressive_move.start.y] = self._NO_PIECE
-        self._boards[move.aggressive_board][move.aggressive_move.end.x][move.aggressive_move.end.y] = aggressive_piece
+        end_piece = self._boards[move.aggressive_board][move.aggressive_move.end.x][move.aggressive_move.end.y]
 
         if move.aggressive_move.magnitude == 2:
-            if piece_on_end != self._NO_PIECE and after_end.valid:
-                self._boards[move.aggressive_board][after_end.x][after_end.y] = piece_on_end
+            # Getting the middle cord that the moving piece passes through
+            middle_cord  = move.aggressive_move.start + move.aggressive_move.normalized_difference
+            middle_piece = self._boards[move.aggressive_board][middle_cord.x][middle_cord.y]
 
-            else:
-                middle: Cord = move.aggressive_move.start + move.aggressive_move.normalized_difference
-                piece_on_middle = self._boards[move.aggressive_board][middle.x][middle.y]
+            # Moving the piece, and emptying the middle piece
+            self._boards[move.aggressive_board][move.aggressive_move.start.x][move.aggressive_move.start.y] = self._NO_PIECE
+            self._boards[move.aggressive_board][middle_cord.x][middle_cord.y] = self._NO_PIECE
+            self._boards[move.aggressive_board][move.aggressive_move.end.x][move.aggressive_move.end.y] = moving_piece
 
-                if piece_on_middle != self._NO_PIECE and after_end.valid:
-                    self._boards[move.aggressive_board][after_end.x][after_end.y] = piece_on_end
+            if pushed_to_cord.valid and (middle_piece != self.NONE or end_piece != self.NONE):
+                self._boards[move.aggressive_board][pushed_to_cord.x][pushed_to_cord.y] = middle_piece if middle_piece != self._NO_PIECE else end_piece
 
-                self._boards[move.aggressive_board][middle.x][middle.y] = self._NO_PIECE
+        else:
+            self._boards[move.aggressive_board][move.aggressive_move.start.x][move.aggressive_move.start.y] = self._NO_PIECE
+            self._boards[move.aggressive_board][move.aggressive_move.end.x][move.aggressive_move.end.y] = moving_piece
 
-        elif move.aggressive_move.magnitude == 1: # Logic for pushing a piece when magnitude is 1
-            if piece_on_end != self._NO_PIECE and after_end.valid: # Checking to see if a piece was even there, and it has a place to go
-                self._boards[move.aggressive_board][after_end.x][after_end.y] = piece_on_end
+            if end_piece != self._NO_PIECE and pushed_to_cord.valid:
+                self._boards[move.aggressive_board][pushed_to_cord.x][pushed_to_cord.y] = end_piece
 
-    def get_legal_moves(self, color: WHITE or BLACK):
-        board_color_key: str = "black" if color == self.BLACK else "white"
+        # Switching whose turn it is
+        self._current_player *= -1 # This just swaps it
+
+        # Updating history
+        self._move_stack.append((move, self.serialized_string))
+
+    def undo_move(self):
+        self.load(self._move_stack[-1][1])
+
+        self._move_stack.pop()
+
+    def get_legal_moves(self):
+        board_color_key: str = "black" if self._current_player == self.BLACK else "white"
 
         # Getting passive moves that cannot interfere with other pieces, and can only be played on your own board
         passive_moves: list[tuple[Move, str]] = []
@@ -123,7 +179,7 @@ class Board:
             for x in range(4):
                 for y in range(4):
                     # Getting location of piece if it is desired color
-                    if self._boards[board][x][y] == color:
+                    if self._boards[board][x][y] == self._current_player:
                         start: Cord = Cord(x, y)
 
                         # Testing directions to see if they are (A) Blocked by a piece (B) Out of bounds
@@ -151,7 +207,7 @@ class Board:
             for board in adjacent_boards:
                 for x in range(4):
                     for y in range(4):
-                        if self._boards[board][x][y] == color:
+                        if self._boards[board][x][y] == self._current_player:
                             start: Cord = Cord(x, y)
                             end: Cord = start + passive[0].difference
 
@@ -169,7 +225,7 @@ class Board:
                                 if self._boards[board][end.x][end.y] == self._NO_PIECE: # Empty Square being moved to
                                     moves.append(move)
 
-                                elif self._boards[board][end.x][end.y] == self._get_opposite_color(color): # An opposite color piece is being attacked
+                                elif self._boards[board][end.x][end.y] == self._get_opposite_color(self._current_player): # An opposite color piece is being attacked
                                     behind_attacked_piece: Cord = end + passive[0].difference
 
                                     if not behind_attacked_piece.valid: # If there is no more board after it, it can be pushed off
@@ -187,23 +243,119 @@ class Board:
                                 if destination == self._NO_PIECE and middle == self._NO_PIECE: # Checking to see if no pieces are in the way
                                     moves.append(move)
 
-                                elif middle == color or destination == color: # Checking if a single piece of your own color is in the way
+                                elif middle == self._current_player or destination == self._current_player: # Checking if a single piece of your own color is in the way
                                     continue
 
-                                elif (middle == self._get_opposite_color(color)) ^ (destination == self._get_opposite_color(color)): # Checking to see if there is only one opposite colored piece in the way
+                                elif (middle == self._get_opposite_color(self._current_player)) ^ (destination == self._get_opposite_color(self._current_player)): # Checking to see if there is only one opposite colored piece in the way
                                     if not after_end.valid or self._boards[board][after_end.x][after_end.y] == self._NO_PIECE: # Seeing if it gets pushed to open space, or off the board
                                         moves.append(move)
 
         return moves
 
+    def get_mock(self, move: MovePair, keep_metadata: bool = True, keep_moves: bool = False):
+        mock = self.copy(keep_metadata=keep_metadata, keep_moves=keep_moves)
+
+        mock.make_move(move)
+
+        return mock
+
+    def copy(self, keep_moves: bool = False, keep_metadata: bool = True) -> Self:
+        # Create a new board without using the serialized string
+        new_board = Board()
+
+        # Transferring over other data that isn't board position
+        if keep_metadata:
+            new_board._turn_number = self._turn_number
+            new_board._winner = self._winner
+        new_board._current_player = self._current_player
+
+        if keep_moves:
+            new_board._move_stack = self._move_stack.copy()
+
+        # Deep copy the boards
+        new_board._boards = {
+            key: np.copy(value) for key, value in self._boards.items()
+        }
+
+        return new_board
+
+    @property
+    def boards(self) -> dict[str, np.array]:
+        return self._boards
+
+    @property
+    def board_keys(self) -> dict.keys:
+        return self._boards.keys()
+
+    @property
+    def current_player_turn(self) -> int:
+        return self._current_player
+
+    @property
+    def turn_number(self) -> int:
+        return math.floor(self._turn_number)
+
+    @property
+    def moves_made(self) -> list[MovePair]:
+        return [move[0] for move in self._move_stack]
+
+    @property
+    def last_move(self) -> MovePair:
+        return self.moves_made[-1]
+
+    @property
+    def history(self):
+        return [serial[1] for serial in self._move_stack]
+
+    @property
+    def winner(self) -> None or int:
+        return self._winner
+
+    @property
+    def serialized_string(self):
+        end_string = ""
+        for sub_board in self._boards:
+            for y in range(4):
+                for x in range(4):
+                    end_string += str(self._boards[sub_board][x][y]) + ";"
+
+            end_string = end_string.rstrip(";") + "||"
+
+        end_string = end_string.rstrip("||") + "&&" + str(self._turn_number) + "&&" + str(self._current_player)
+
+        return end_string
+
+    @staticmethod
+    def get_player_turn_from_serial(serial: str):
+        return int(serial.split("&&")[-1])
+
+    def __copy__(self):
+        return Board(self.serialized_string)
+
     def __str__(self):
-        return \
-f"""{self._boards["whiteLeft"][0][3]} {self._boards["whiteLeft"][1][3]} {self._boards["whiteLeft"][2][3]} {self._boards["whiteLeft"][3][3]} | {self._boards["whiteRight"][0][3]} {self._boards["whiteRight"][1][3]} {self._boards["whiteRight"][2][3]} {self._boards["whiteRight"][3][3]}
-{self._boards["whiteLeft"][0][2]} {self._boards["whiteLeft"][1][2]} {self._boards["whiteLeft"][2][2]} {self._boards["whiteLeft"][3][2]} | {self._boards["whiteRight"][0][2]} {self._boards["whiteRight"][1][2]} {self._boards["whiteRight"][2][2]} {self._boards["whiteRight"][3][2]}
-{self._boards["whiteLeft"][0][1]} {self._boards["whiteLeft"][1][1]} {self._boards["whiteLeft"][2][1]} {self._boards["whiteLeft"][3][1]} | {self._boards["whiteRight"][0][1]} {self._boards["whiteRight"][1][1]} {self._boards["whiteRight"][2][1]} {self._boards["whiteRight"][3][1]}
-{self._boards["whiteLeft"][0][0]} {self._boards["whiteLeft"][1][0]} {self._boards["whiteLeft"][2][0]} {self._boards["whiteLeft"][3][0]} | {self._boards["whiteRight"][0][0]} {self._boards["whiteRight"][1][0]} {self._boards["whiteRight"][2][0]} {self._boards["whiteRight"][3][0]}
---------+--------
-{self._boards["blackLeft"][0][3]} {self._boards["blackLeft"][1][3]} {self._boards["blackLeft"][2][3]} {self._boards["blackLeft"][3][3]} | {self._boards["blackRight"][0][3]} {self._boards["blackRight"][1][3]} {self._boards["blackRight"][2][3]} {self._boards["blackRight"][3][3]}
-{self._boards["blackLeft"][0][2]} {self._boards["blackLeft"][1][2]} {self._boards["blackLeft"][2][2]} {self._boards["blackLeft"][3][2]} | {self._boards["blackRight"][0][2]} {self._boards["blackRight"][1][2]} {self._boards["blackRight"][2][2]} {self._boards["blackRight"][3][2]}
-{self._boards["blackLeft"][0][1]} {self._boards["blackLeft"][1][1]} {self._boards["blackLeft"][2][1]} {self._boards["blackLeft"][3][1]} | {self._boards["blackRight"][0][1]} {self._boards["blackRight"][1][1]} {self._boards["blackRight"][2][1]} {self._boards["blackRight"][3][1]}
-{self._boards["blackLeft"][0][0]} {self._boards["blackLeft"][1][0]} {self._boards["blackLeft"][2][0]} {self._boards["blackLeft"][3][0]} | {self._boards["blackRight"][0][0]} {self._boards["blackRight"][1][0]} {self._boards["blackRight"][2][0]} {self._boards["blackRight"][3][0]}"""
+        """
+        Returns a formatted string representation of the board.
+        The board is displayed such that the bottom is on the bottom and the top is on the top.
+        Integer values are replaced as:
+        -1 -> 'W', 1 -> 'B', 0 -> '.'
+        """
+
+        def format_piece(val):
+            return str(val).replace("0", ".").replace("-1", "W").replace("1", "B")
+
+        def get_column_strings(half_board):
+            # Transpose the 4x4 board and reverse columns to turn them upright
+            return [[format_piece(half_board[x][y]) for x in range(3, -1, -1)] for y in reversed(range(4))]
+
+        white_left = get_column_strings(self._boards["whiteLeft"])
+        white_right = get_column_strings(self._boards["whiteRight"])
+        black_left = get_column_strings(self._boards["blackLeft"])
+        black_right = get_column_strings(self._boards["blackRight"])
+
+        def join_rows(left_half, right_half):
+            return [f"{' '.join(left)} | {' '.join(right)}" for left, right in zip(left_half, right_half)]
+
+        white_rows = join_rows(white_left, white_right)
+        black_rows = join_rows(black_left, black_right)
+
+        return "\n".join(white_rows + ["--------+--------"] + black_rows)

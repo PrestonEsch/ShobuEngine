@@ -37,6 +37,9 @@ class Cord:
     def __str__(self):
         return f"[{self._x}, {self._y}]"
 
+    def __eq__(self, other):
+        return self.x == other.x and self.y == other.y
+
 
 class Move:
     def __init__(self, start: Cord, end: Cord):
@@ -61,11 +64,23 @@ class Move:
 
     @property
     def normalized_difference(self) -> Cord:
-        return Cord(min(self.difference.x, 1), min(self.difference.y, 1))
+        dx = self.difference.x
+        dy = self.difference.y
+
+        # Calculate normalized values based on maximum absolute component
+        max_component = max(abs(dx), abs(dy))
+
+        if max_component == 0:
+            return Cord(0, 0)
+
+        return Cord(
+            int(dx / max_component),
+            int(dy / max_component)
+        )
 
     @property
     def magnitude(self):
-        return 2 if self.difference.x == 2 or self.difference.y == 2 else 1
+        return max(abs(self.difference.x), abs(self.difference.y))
 
     def __add__(self, other):
         return Move(self._start + other.start, self._end + other.end)
@@ -78,6 +93,9 @@ class Move:
 
     def __str__(self):
         return f"{self._start} => {self._end}"
+
+    def __eq__(self, other):
+        return self.start == other.start and self.end == other.end
 
 
 class MovePair:
@@ -107,3 +125,5 @@ class MovePair:
     def __str__(self):
         return f"Passive    ({self._passive_board}): {self._passive_move}\nAggressive ({self._aggressive_board}): {self._aggressive_move}"
 
+    def __eq__(self, other):
+        return self.passive_move == other.passive_move and self.aggressive_move == other.aggressive_move and self.passive_board == other.passive_board and self.aggressive_board == other.aggressive_board
